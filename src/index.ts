@@ -46,6 +46,34 @@ function generateTrackingLink(tokenNumber: number): string {
 }
 
 /**
+ * Return start and end Date objects (UTC) for a calendar day in IST (Asia/Kolkata)
+ * If `dateString` is provided, it must be in YYYY-MM-DD format.
+ * If omitted, uses current date in IST.
+ */
+function getIstStartEnd(dateString?: string): { start: Date; end: Date } {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes
+  if (dateString) {
+    const parts = dateString.split('-').map((v) => parseInt(v, 10));
+    const [y, m, d] = parts; // m is 1-based
+    const startUtcMs = Date.UTC(y, m - 1, d) - IST_OFFSET_MS;
+    const start = new Date(startUtcMs);
+    const end = new Date(startUtcMs + 24 * 60 * 60 * 1000);
+    return { start, end };
+  }
+
+  // use current time shifted to IST to get today's date in IST
+  const now = Date.now();
+  const istNow = new Date(now + IST_OFFSET_MS);
+  const y = istNow.getUTCFullYear();
+  const m = istNow.getUTCMonth();
+  const d = istNow.getUTCDate();
+  const startUtcMs = Date.UTC(y, m, d) - IST_OFFSET_MS;
+  const start = new Date(startUtcMs);
+  const end = new Date(startUtcMs + 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+/**
  * Send WhatsApp message to patient via Twilio
  */
 async function sendWhatsAppMessage(
@@ -165,14 +193,10 @@ io.on('connection', (socket) => {
    */
   socket.on('GET_QUEUE_BY_DATE', async (dateString: string) => {
     try {
-      // Parse the date (format: YYYY-MM-DD)
-      const targetDate = new Date(dateString);
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(startOfDay);
-      endOfDay.setDate(endOfDay.getDate() + 1);
+      // Compute IST start/end for the requested date
+      const { start: startOfDay, end: endOfDay } = getIstStartEnd(dateString);
 
-      // Fetch patients created on this date
+      // Fetch patients created on this date (IST range -> UTC timestamps)
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
         status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE'] },
@@ -269,10 +293,8 @@ io.on('connection', (socket) => {
   // Provide daily DONE count on request
   socket.on('GET_DAILY_DONE_COUNT', async () => {
     try {
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(startOfDay);
-      endOfDay.setDate(endOfDay.getDate() + 1);
+      // Use IST (Asia/Kolkata) day boundaries
+      const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
       const count = await Patient.countDocuments({
         status: 'DONE',
@@ -293,11 +315,39 @@ io.on('connection', (socket) => {
    */
   socket.on('RESET_QUEUE', async () => {
     try {
-      const queue = await getSortedQueue();
-      const queueWithWaitTimes = calculateWaitTimes(queue);
+      // Compute today's IST start/end and fetch patients for that day
+      const { start: startOfDay, end: endOfDay } = getIstStartEnd();
+
+      const patients = await Patient.find({
+        createdAt: { $gte: startOfDay, $lt: endOfDay },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE'] },
+      }).sort({ createdAt: 1 });
+
+      // Apply hybrid algorithm to today's patients
+      const bookedPatients = patients.filter((p) => p.type === 'BOOKED');
+      const walkInPatients = patients.filter((p) => p.type === 'WALK_IN');
+
+      const sortedQueue: IPatient[] = [];
+      let bookedIndex = 0;
+      let walkInIndex = 0;
+
+      while (
+        bookedIndex < bookedPatients.length ||
+        walkInIndex < walkInPatients.length
+      ) {
+        for (let i = 0; i < 3 && bookedIndex < bookedPatients.length; i++) {
+          sortedQueue.push(bookedPatients[bookedIndex++]);
+        }
+
+        if (walkInIndex < walkInPatients.length) {
+          sortedQueue.push(walkInPatients[walkInIndex++]);
+        }
+      }
+
+      const queueWithWaitTimes = calculateWaitTimes(sortedQueue);
       io.emit('QUEUE_UPDATE', queueWithWaitTimes);
       socket.emit('RESET_SUCCESS', {
-        message: 'Queue reset to today\'s patients',
+        message: 'Queue reset to today\'s patients (IST)',
         queue: queueWithWaitTimes,
       });
     } catch (error) {
@@ -335,10 +385,8 @@ app.get('/api/queue', async (req: Request, res: Response) => {
  */
 app.get('/api/stats/done-today', async (req: Request, res: Response) => {
   try {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(startOfDay);
-    endOfDay.setDate(endOfDay.getDate() + 1);
+    // Use IST boundaries
+    const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
     const count = await Patient.countDocuments({
       status: 'DONE',
