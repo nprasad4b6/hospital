@@ -159,6 +159,58 @@ io.on('connection', (socket) => {
   });
 
   /**
+   * GET_QUEUE_BY_DATE Event
+   * Fetches queue filtered by a specific date
+   * Emits: QUEUE_UPDATE with filtered results
+   */
+  socket.on('GET_QUEUE_BY_DATE', async (dateString: string) => {
+    try {
+      // Parse the date (format: YYYY-MM-DD)
+      const targetDate = new Date(dateString);
+      const startOfDay = new Date(targetDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setDate(endOfDay.getDate() + 1);
+
+      // Fetch patients created on this date
+      const patients = await Patient.find({
+        createdAt: { $gte: startOfDay, $lt: endOfDay },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE'] },
+      }).sort({ createdAt: 1 });
+
+      // Apply hybrid algorithm for sorting
+      const bookedPatients = patients.filter((p) => p.type === 'BOOKED');
+      const walkInPatients = patients.filter((p) => p.type === 'WALK_IN');
+
+      const sortedQueue: IPatient[] = [];
+      let bookedIndex = 0;
+      let walkInIndex = 0;
+
+      while (
+        bookedIndex < bookedPatients.length ||
+        walkInIndex < walkInPatients.length
+      ) {
+        for (let i = 0; i < 3 && bookedIndex < bookedPatients.length; i++) {
+          sortedQueue.push(bookedPatients[bookedIndex++]);
+        }
+
+        if (walkInIndex < walkInPatients.length) {
+          sortedQueue.push(walkInPatients[walkInIndex++]);
+        }
+      }
+
+      const queueWithWaitTimes = calculateWaitTimes(sortedQueue);
+      socket.emit('QUEUE_UPDATE', queueWithWaitTimes);
+    } catch (error) {
+      console.error('Error fetching queue by date:', error);
+      socket.emit('ERROR', {
+        message: 'Failed to fetch queue for selected date',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  /**
    * START_CONSULTATION Event
    */
   socket.on('START_CONSULTATION', async () => {
@@ -231,6 +283,29 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('Error fetching daily done count:', err);
       socket.emit('DAILY_DONE_COUNT', { count: 0 });
+    }
+  });
+
+  /**
+   * RESET_QUEUE Event
+   * Manually resets the queue to today's patients
+   * Useful for starting a new shift
+   */
+  socket.on('RESET_QUEUE', async () => {
+    try {
+      const queue = await getSortedQueue();
+      const queueWithWaitTimes = calculateWaitTimes(queue);
+      io.emit('QUEUE_UPDATE', queueWithWaitTimes);
+      socket.emit('RESET_SUCCESS', {
+        message: 'Queue reset to today\'s patients',
+        queue: queueWithWaitTimes,
+      });
+    } catch (error) {
+      console.error('Error resetting queue:', error);
+      socket.emit('ERROR', {
+        message: 'Failed to reset queue',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 });
