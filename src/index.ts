@@ -407,8 +407,14 @@ app.post('/api/patients', async (req: Request, res: Response) => {
   try {
     const { name, phone, type } = req.body;
 
-    const lastPatient = await Patient.findOne().sort({ tokenNumber: -1 });
-    const tokenNumber = (lastPatient?.tokenNumber || 0) + 1;
+    // Compute token number relative to the current IST calendar day so tokens start from 1 each day
+    const { start: todayStart, end: todayEnd } = getIstStartEnd();
+    const lastToday = await Patient.findOne({
+      createdAt: { $gte: todayStart, $lt: todayEnd },
+    }).sort({ tokenNumber: -1 });
+    const tokenNumber = (lastToday?.tokenNumber && lastToday.tokenNumber >= 1)
+      ? lastToday.tokenNumber + 1
+      : 1;
 
     const patient = new Patient({
       name,
