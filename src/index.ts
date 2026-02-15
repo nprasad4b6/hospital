@@ -158,11 +158,24 @@ async function getSortedQueue(): Promise<IPatient[]> {
  * Formula: Position * 15 minutes
  */
 function calculateWaitTimes(queue: IPatient[]): IQueueItem[] {
-  // Compute positions relative to only IN_PROGRESS and WAITING patients.
-  // IN_PROGRESS => position 0, WAITING => 1..n (increment per waiting patient),
-  // DONE or other statuses get position -1 and ETA 0.
+  // Re-order queue so ETAs progress in ascending tokenNumber order:
+  // 1) IN_PROGRESS (if any) first
+  // 2) WAITING sorted by tokenNumber ascending
+  // 3) DONE (or others) after
+  const inProgress = queue.find((p) => p.status === 'IN_PROGRESS');
+  const waiting = queue
+    .filter((p) => p.status === 'WAITING')
+    .slice()
+    .sort((a, b) => (a.tokenNumber || 0) - (b.tokenNumber || 0));
+  const done = queue.filter((p) => p.status === 'DONE');
+
+  const ordered: IPatient[] = [];
+  if (inProgress) ordered.push(inProgress);
+  ordered.push(...waiting);
+  ordered.push(...done);
+
   let waitingCounter = 0;
-  return queue.map((patient) => {
+  return ordered.map((patient) => {
     let position: number;
     let estimatedWaitTime: number;
 
@@ -174,7 +187,6 @@ function calculateWaitTimes(queue: IPatient[]): IQueueItem[] {
       position = waitingCounter;
       estimatedWaitTime = position * 15;
     } else {
-      // DONE or unknown status
       position = -1;
       estimatedWaitTime = 0;
     }
