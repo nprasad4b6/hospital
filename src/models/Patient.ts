@@ -17,7 +17,6 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   tokenNumber: {
     type: Number,
-    unique: true,
     required: true,
   },
   type: {
@@ -43,5 +42,8 @@ const patientSchema = new Schema<IPatientDocument>({
   startedAt: Date,
   completedAt: Date,
 });
+
+// Compound unique index: tokenNumber is unique per day (by createdAt)
+patientSchema.index({ tokenNumber: 1, createdAt: 1 }, { unique: true });
 
 export default mongoose.model<IPatientDocument>('Patient', patientSchema);
