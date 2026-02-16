@@ -41,7 +41,8 @@ connectDB();
  * Generate tracking link for patient
  */
 function generateTrackingLink(tokenNumber: number): string {
-  const baseUrl = process.env.HOSPITAL_BASE_URL || 'http://localhost:3000';
+  // Use HOSPITAL_BASE_URL (preferred) or FRONTEND_URL, fallback to localhost
+  const baseUrl = process.env.HOSPITAL_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3000';
   return `${baseUrl}/track?token=${tokenNumber}`;
 }
 
