@@ -117,9 +117,14 @@ async function sendWhatsAppMessage(
  * For every 3 BOOKED patients, insert 1 WALK_IN patient
  * Returns a single sorted array
  */
-async function getSortedQueue(): Promise<IPatient[]> {
+async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
   try {
+    // Limit to patients created within the requested IST calendar day.
+    // If no dateString provided, `getIstStartEnd()` returns today's IST boundaries.
+    const { start, end } = getIstStartEnd(dateString);
+
     const patients = await Patient.find({
+      createdAt: { $gte: start, $lt: end },
       status: { $in: ['WAITING', 'IN_PROGRESS'] },
     }).sort({ createdAt: 1 });
 
@@ -324,12 +329,12 @@ io.on('connection', (socket) => {
   // Provide daily DONE count on request
   socket.on('GET_DAILY_DONE_COUNT', async () => {
     try {
-      // Use IST (Asia/Kolkata) day boundaries
+      // Use IST (Asia/Kolkata) day boundaries for creation date
       const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
       const count = await Patient.countDocuments({
+        createdAt: { $gte: startOfDay, $lt: endOfDay },
         status: 'DONE',
-        completedAt: { $gte: startOfDay, $lt: endOfDay },
       });
 
       socket.emit('DAILY_DONE_COUNT', { count });
@@ -412,22 +417,62 @@ app.get('/api/queue', async (req: Request, res: Response) => {
 
 /**
  * GET /api/stats/done-today
- * Returns count of patients with status DONE for the current local date
+ * Returns count of patients created today (by IST date) who have status DONE
+ * (regardless of when they were completed)
  */
 app.get('/api/stats/done-today', async (req: Request, res: Response) => {
   try {
-    // Use IST boundaries
+    // Use IST boundaries for creation date
     const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
     const count = await Patient.countDocuments({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
       status: 'DONE',
-      completedAt: { $gte: startOfDay, $lt: endOfDay },
     });
 
     res.json({ count });
   } catch (error) {
     console.error('Error fetching done-today count:', error);
     res.status(500).json({ count: 0 });
+  }
+});
+
+/**
+ * GET /api/stats/today-all
+ * Debug endpoint: Returns all patients for today grouped by status
+ */
+app.get('/api/stats/today-all', async (req: Request, res: Response) => {
+  try {
+    const { start: startOfDay, end: endOfDay } = getIstStartEnd();
+
+    const waiting = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: 'WAITING',
+    }).sort({ createdAt: 1 });
+
+    const inProgress = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: 'IN_PROGRESS',
+    }).sort({ createdAt: 1 });
+
+    const done = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: 'DONE',
+    }).sort({ completedAt: -1 });
+
+    res.json({
+      istDayRange: { start: startOfDay, end: endOfDay },
+      counts: {
+        waiting: waiting.length,
+        inProgress: inProgress.length,
+        done: done.length,
+        total: waiting.length + inProgress.length + done.length,
+      },
+      patients: { waiting, inProgress, done },
+    });
+  } catch (error) {
+    console.error('Error fetching today-all stats:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'An error occurred' });
   }
 });
 
