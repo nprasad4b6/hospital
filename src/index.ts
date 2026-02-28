@@ -288,10 +288,12 @@ io.on('connection', (socket) => {
         console.log(`Patient ${currentPatient.tokenNumber} consultation completed`);
       }
 
+      // fetch current queue before moving next patient
       const queue = await getSortedQueue();
+      let nextPatient = null;
 
       if (queue.length > 0) {
-        const nextPatient = await Patient.findByIdAndUpdate(
+        nextPatient = await Patient.findByIdAndUpdate(
           queue[0]._id,
           {
             status: 'IN_PROGRESS',
@@ -303,8 +305,17 @@ io.on('connection', (socket) => {
         console.log(`Patient ${nextPatient?.tokenNumber} consultation started`);
       }
 
+      // after any updates, re‑compute the queue and wait times
       const updatedQueue = await getSortedQueue();
       const queueWithWaitTimes = calculateWaitTimes(updatedQueue);
+
+      if (nextPatient) {
+        io.emit('PATIENT_STARTED', {
+          patient: nextPatient,
+          queue: queueWithWaitTimes,
+        });
+        console.log(`[${new Date().toISOString()}] Patient started: token=${nextPatient.tokenNumber}`);
+      }
 
       io.emit('QUEUE_UPDATE', queueWithWaitTimes);
 
@@ -509,17 +520,79 @@ app.post('/api/patients', async (req: Request, res: Response) => {
     const queueWithWaitTimes = calculateWaitTimes(queue);
     io.emit('QUEUE_UPDATE', queueWithWaitTimes);
 
+    // Emit registration and queue update so all displays update immediately
     const response = {
       ...patient.toObject(),
       trackingLink: generateTrackingLink(tokenNumber),
       whatsappSent,
     };
 
+    io.emit('PATIENT_REGISTERED', {
+      patient: response,
+      queue: queueWithWaitTimes,
+    });
+    console.log(`[${new Date().toISOString()}] Patient registered: token=${tokenNumber}, name=${name}`);
+
     res.status(201).json(response);
   } catch (error) {
     res.status(400).json({
       error: error instanceof Error ? error.message : 'An error occurred',
     });
+  }
+});
+
+/**
+ * POST /api/start-consultation
+ * HTTP helper to trigger the same behavior as socket 'START_CONSULTATION'
+ */
+app.post('/api/start-consultation', async (req: Request, res: Response) => {
+  try {
+    const currentPatient = await Patient.findOneAndUpdate(
+      { status: 'IN_PROGRESS' },
+      {
+        status: 'DONE',
+        completedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (currentPatient) {
+      console.log(`Patient ${currentPatient.tokenNumber} consultation completed (via HTTP)`);
+    }
+
+    // fetch queue before advancing
+    const queue = await getSortedQueue();
+    let nextPatient = null;
+
+    if (queue.length > 0) {
+      nextPatient = await Patient.findByIdAndUpdate(
+        queue[0]._id,
+        {
+          status: 'IN_PROGRESS',
+          startedAt: new Date(),
+        },
+        { new: true }
+      );
+
+      console.log(`Patient ${nextPatient?.tokenNumber} consultation started (via HTTP)`);
+    }
+
+    const updatedQueue = await getSortedQueue();
+    const queueWithWaitTimes = calculateWaitTimes(updatedQueue);
+
+    if (nextPatient) {
+      io.emit('PATIENT_STARTED', {
+        patient: nextPatient,
+        queue: queueWithWaitTimes,
+      });
+    }
+
+    io.emit('QUEUE_UPDATE', queueWithWaitTimes);
+
+    res.json({ success: true, queue: queueWithWaitTimes });
+  } catch (error) {
+    console.error('Error in start-consultation (HTTP):', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'An error occurred' });
   }
 });
 
