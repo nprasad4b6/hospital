@@ -12,6 +12,16 @@ const patientSchema = new Schema<IPatientDocument>({
     type: String,
     required: true,
   },
+  age: {
+    type: Number,
+    min: 0,
+    max: 120,
+  },
+  gender: {
+    type: String,
+    enum: ['MALE', 'FEMALE'],
+    default: 'FEMALE',
+  },
   email: {
     type: String,
   },
@@ -27,7 +37,7 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   status: {
     type: String,
-    enum: ['WAITING', 'IN_PROGRESS', 'DONE'],
+    enum: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'],
     default: 'WAITING',
     required: true,
   },

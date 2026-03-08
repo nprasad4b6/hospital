@@ -2,10 +2,12 @@ export interface IPatient {
   _id?: string;
   name: string;
   phone: string;
+  age?: number;
+  gender?: 'MALE' | 'FEMALE';
   email?: string;
   tokenNumber: number;
   type: 'BOOKED' | 'WALK_IN';
-  status: 'WAITING' | 'IN_PROGRESS' | 'DONE';
+  status: 'WAITING' | 'IN_PROGRESS' | 'DONE' | 'SKIPPED' | 'ON_HOLD';
   department?: string;
   createdAt?: Date;
   startedAt?: Date;

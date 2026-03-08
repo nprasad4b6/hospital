@@ -125,11 +125,19 @@ async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
 
     const patients = await Patient.find({
       createdAt: { $gte: start, $lt: end },
-      status: { $in: ['WAITING', 'IN_PROGRESS'] },
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'SKIPPED', 'ON_HOLD'] },
     }).sort({ createdAt: 1 });
 
-    const bookedPatients = patients.filter((p) => p.type === 'BOOKED');
-    const walkInPatients = patients.filter((p) => p.type === 'WALK_IN');
+    // Active patients participate in queue ordering; skipped/on-hold are appended.
+    const activePatients = patients.filter(
+      (p) => p.status === 'WAITING' || p.status === 'IN_PROGRESS'
+    );
+    const awayPatients = patients
+      .filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD')
+      .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
+
+    const bookedPatients = activePatients.filter((p) => p.type === 'BOOKED');
+    const walkInPatients = activePatients.filter((p) => p.type === 'WALK_IN');
 
     const sortedQueue: IPatient[] = [];
     let bookedIndex = 0;
@@ -148,7 +156,7 @@ async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
       }
     }
 
-    return sortedQueue;
+    return [...sortedQueue, ...awayPatients];
   } catch (error) {
     console.error('Error in getSortedQueue:', error);
     return [];
@@ -174,11 +182,13 @@ function calculateWaitTimes(queue: IPatient[]): IQueueItem[] {
     .slice()
     .sort((a, b) => (a.tokenNumber || 0) - (b.tokenNumber || 0));
   const done = queue.filter((p) => p.status === 'DONE');
+  const skipped = queue.filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD');
 
   const ordered: IPatient[] = [];
   if (inProgress) ordered.push(inProgress);
   ordered.push(...waiting);
   ordered.push(...done);
+  ordered.push(...skipped);
 
   let waitingCounter = 0;
   return ordered.map((patient) => {
@@ -235,7 +245,7 @@ io.on('connection', (socket) => {
       // Fetch patients created on this date (IST range -> UTC timestamps)
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'] },
       }).sort({ createdAt: 1 });
 
       // Apply hybrid algorithm for sorting
@@ -367,7 +377,7 @@ io.on('connection', (socket) => {
 
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'] },
       }).sort({ createdAt: 1 });
 
       // Apply hybrid algorithm to today's patients
@@ -471,15 +481,27 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
       status: 'DONE',
     }).sort({ completedAt: -1 });
 
+    const onHold = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: 'ON_HOLD',
+    }).sort({ createdAt: 1 });
+
+    const skipped = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: 'SKIPPED',
+    }).sort({ createdAt: 1 });
+
     res.json({
       istDayRange: { start: startOfDay, end: endOfDay },
       counts: {
         waiting: waiting.length,
         inProgress: inProgress.length,
         done: done.length,
-        total: waiting.length + inProgress.length + done.length,
+        onHold: onHold.length,
+        skipped: skipped.length,
+        total: waiting.length + inProgress.length + done.length + onHold.length + skipped.length,
       },
-      patients: { waiting, inProgress, done },
+      patients: { waiting, inProgress, done, onHold, skipped },
     });
   } catch (error) {
     console.error('Error fetching today-all stats:', error);
@@ -492,7 +514,7 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
  */
 app.post('/api/patients', async (req: Request, res: Response) => {
   try {
-    const { name, phone, type } = req.body;
+    const { name, phone, type, age, gender } = req.body;
 
     // Compute token number relative to the current IST calendar day so tokens start from 1 each day
     const { start: todayStart, end: todayEnd } = getIstStartEnd();
@@ -506,6 +528,8 @@ app.post('/api/patients', async (req: Request, res: Response) => {
     const patient = new Patient({
       name,
       phone,
+      age,
+      gender: gender || 'FEMALE',
       tokenNumber,
       type: type || 'WALK_IN',
       status: 'WAITING',
@@ -623,9 +647,18 @@ app.get('/api/patients/:id', async (req: Request, res: Response) => {
 app.put('/api/patients/:id/status', async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
+    const updateData: Record<string, any> = { status };
+
+    if (status === 'IN_PROGRESS') {
+      updateData.startedAt = new Date();
+    }
+    if (status === 'DONE') {
+      updateData.completedAt = new Date();
+    }
+
     const patient = await Patient.findByIdAndUpdate(
       req.params.id,
-      { status },
+      updateData,
       { new: true }
     );
 
