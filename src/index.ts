@@ -6,6 +6,7 @@ import cors from 'cors';
 import connectDB from './config/database';
 import Patient from './models/Patient';
 import { IPatient, IQueueItem } from './types/patient';
+import { callPatient } from './controllers/patientController';
 
 // Twilio setup
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -108,13 +109,12 @@ async function sendWhatsAppMessage(
 }
 
 // ============================================
-// HYBRID SLOTTING ALGORITHM
+// QUEUE ORDERING
 // ============================================
 
 /**
  * getSortedQueue()
- * Implements Hybrid Slotting Algorithm:
- * For every 3 BOOKED patients, insert 1 WALK_IN patient
+ * Queue order is strict arrival order (createdAt ascending).
  * Returns a single sorted array
  */
 async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
@@ -136,25 +136,9 @@ async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
       .filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD')
       .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
 
-    const bookedPatients = activePatients.filter((p) => p.type === 'BOOKED');
-    const walkInPatients = activePatients.filter((p) => p.type === 'WALK_IN');
-
-    const sortedQueue: IPatient[] = [];
-    let bookedIndex = 0;
-    let walkInIndex = 0;
-
-    while (
-      bookedIndex < bookedPatients.length ||
-      walkInIndex < walkInPatients.length
-    ) {
-      for (let i = 0; i < 3 && bookedIndex < bookedPatients.length; i++) {
-        sortedQueue.push(bookedPatients[bookedIndex++]);
-      }
-
-      if (walkInIndex < walkInPatients.length) {
-        sortedQueue.push(walkInPatients[walkInIndex++]);
-      }
-    }
+    const sortedQueue = activePatients
+      .slice()
+      .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
 
     return [...sortedQueue, ...awayPatients];
   } catch (error) {
@@ -175,19 +159,19 @@ function calculateWaitTimes(queue: IPatient[]): IQueueItem[] {
   // Re-order queue so ETAs progress in ascending tokenNumber order:
   // 1) IN_PROGRESS (if any) first
   // 2) WAITING sorted by tokenNumber ascending
-  // 3) DONE (or others) after
+  // 3) COMPLETED (or others) after
   const inProgress = queue.find((p) => p.status === 'IN_PROGRESS');
   const waiting = queue
     .filter((p) => p.status === 'WAITING')
     .slice()
     .sort((a, b) => (a.tokenNumber || 0) - (b.tokenNumber || 0));
-  const done = queue.filter((p) => p.status === 'DONE');
+  const completed = queue.filter((p) => p.status === 'COMPLETED');
   const skipped = queue.filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD');
 
   const ordered: IPatient[] = [];
   if (inProgress) ordered.push(inProgress);
   ordered.push(...waiting);
-  ordered.push(...done);
+  ordered.push(...completed);
   ordered.push(...skipped);
 
   let waitingCounter = 0;
@@ -245,29 +229,13 @@ io.on('connection', (socket) => {
       // Fetch patients created on this date (IST range -> UTC timestamps)
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
       }).sort({ createdAt: 1 });
 
-      // Apply hybrid algorithm for sorting
-      const bookedPatients = patients.filter((p) => p.type === 'BOOKED');
-      const walkInPatients = patients.filter((p) => p.type === 'WALK_IN');
-
-      const sortedQueue: IPatient[] = [];
-      let bookedIndex = 0;
-      let walkInIndex = 0;
-
-      while (
-        bookedIndex < bookedPatients.length ||
-        walkInIndex < walkInPatients.length
-      ) {
-        for (let i = 0; i < 3 && bookedIndex < bookedPatients.length; i++) {
-          sortedQueue.push(bookedPatients[bookedIndex++]);
-        }
-
-        if (walkInIndex < walkInPatients.length) {
-          sortedQueue.push(walkInPatients[walkInIndex++]);
-        }
-      }
+      // Strict FIFO by arrival time.
+      const sortedQueue = patients
+        .slice()
+        .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
 
       const queueWithWaitTimes = calculateWaitTimes(sortedQueue);
       socket.emit('QUEUE_UPDATE', queueWithWaitTimes);
@@ -288,7 +256,7 @@ io.on('connection', (socket) => {
       const currentPatient = await Patient.findOneAndUpdate(
         { status: 'IN_PROGRESS' },
         {
-          status: 'DONE',
+          status: 'COMPLETED',
           completedAt: new Date(),
         },
         { new: true }
@@ -347,21 +315,21 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 
-  // Provide daily DONE count on request
-  socket.on('GET_DAILY_DONE_COUNT', async () => {
+  // Provide daily COMPLETED count on request
+  socket.on('GET_DAILY_COMPLETED_COUNT', async () => {
     try {
       // Use IST (Asia/Kolkata) day boundaries for creation date
       const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
       const count = await Patient.countDocuments({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: 'DONE',
+        status: 'COMPLETED',
       });
 
-      socket.emit('DAILY_DONE_COUNT', { count });
+      socket.emit('DAILY_COMPLETED_COUNT', { count });
     } catch (err) {
-      console.error('Error fetching daily done count:', err);
-      socket.emit('DAILY_DONE_COUNT', { count: 0 });
+      console.error('Error fetching daily completed count:', err);
+      socket.emit('DAILY_COMPLETED_COUNT', { count: 0 });
     }
   });
 
@@ -377,29 +345,12 @@ io.on('connection', (socket) => {
 
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
       }).sort({ createdAt: 1 });
 
-      // Apply hybrid algorithm to today's patients
-      const bookedPatients = patients.filter((p) => p.type === 'BOOKED');
-      const walkInPatients = patients.filter((p) => p.type === 'WALK_IN');
-
-      const sortedQueue: IPatient[] = [];
-      let bookedIndex = 0;
-      let walkInIndex = 0;
-
-      while (
-        bookedIndex < bookedPatients.length ||
-        walkInIndex < walkInPatients.length
-      ) {
-        for (let i = 0; i < 3 && bookedIndex < bookedPatients.length; i++) {
-          sortedQueue.push(bookedPatients[bookedIndex++]);
-        }
-
-        if (walkInIndex < walkInPatients.length) {
-          sortedQueue.push(walkInPatients[walkInIndex++]);
-        }
-      }
+      const sortedQueue = patients
+        .slice()
+        .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
 
       const queueWithWaitTimes = calculateWaitTimes(sortedQueue);
       io.emit('QUEUE_UPDATE', queueWithWaitTimes);
@@ -437,23 +388,110 @@ app.get('/api/queue', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/stats/done-today
- * Returns count of patients created today (by IST date) who have status DONE
+ * GET /api/queue-by-date?date=YYYY-MM-DD
+ * Returns complete queue records for selected IST date across all statuses
+ * (WAITING, IN_PROGRESS, COMPLETED, SKIPPED, ON_HOLD) with position + ETA fields.
+ */
+app.get('/api/queue-by-date', async (req: Request, res: Response) => {
+  try {
+    const dateString = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const { start: startOfDay, end: endOfDay } = getIstStartEnd(dateString);
+
+    const patients = await Patient.find({
+      createdAt: { $gte: startOfDay, $lt: endOfDay },
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
+    }).sort({ createdAt: 1 });
+
+    const sortedQueue = patients
+      .slice()
+      .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
+
+    const queueWithWaitTimes = calculateWaitTimes(sortedQueue);
+    res.json(queueWithWaitTimes);
+  } catch (error) {
+    console.error('Error fetching queue by date via REST:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'An error occurred',
+    });
+  }
+});
+
+/**
+ * GET /api/patients/history?months=3&search=term
+ * Returns patient visits in the last N months (default: 3).
+ * Optional search matches name/phone/tokenNumber.
+ */
+app.get('/api/patients/history', async (req: Request, res: Response) => {
+  try {
+    const monthsRaw = typeof req.query.months === 'string' ? parseInt(req.query.months, 10) : 3;
+    const months = Number.isFinite(monthsRaw) && monthsRaw > 0 ? monthsRaw : 3;
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
+    const end = new Date();
+    const start = new Date(end);
+    start.setMonth(start.getMonth() - months);
+
+    const filter: any = {
+      createdAt: { $gte: start, $lte: end },
+      // Include legacy DONE records so historical searches remain complete.
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'DONE', 'SKIPPED', 'ON_HOLD'] },
+    };
+
+    if (search) {
+      const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const orConditions: any[] = [
+        { name: regex },
+        { phone: regex },
+      ];
+
+      const numeric = Number(search);
+      if (Number.isFinite(numeric)) {
+        orConditions.push({ tokenNumber: numeric });
+      }
+
+      filter.$or = orConditions;
+    }
+
+    const patients = await Patient.find(filter).sort({ createdAt: -1 });
+    const normalized = patients.map((patient) => {
+      const data = typeof (patient as any).toObject === 'function'
+        ? (patient as any).toObject()
+        : patient;
+
+      if ((data as any).status === 'DONE') {
+        (data as any).status = 'COMPLETED';
+      }
+
+      return data;
+    });
+
+    res.json(normalized);
+  } catch (error) {
+    console.error('Error fetching patient history:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'An error occurred',
+    });
+  }
+});
+
+/**
+ * GET /api/stats/completed-today
+ * Returns count of patients created today (by IST date) who have status COMPLETED
  * (regardless of when they were completed)
  */
-app.get('/api/stats/done-today', async (req: Request, res: Response) => {
+app.get('/api/stats/completed-today', async (req: Request, res: Response) => {
   try {
     // Use IST boundaries for creation date
     const { start: startOfDay, end: endOfDay } = getIstStartEnd();
 
     const count = await Patient.countDocuments({
       createdAt: { $gte: startOfDay, $lt: endOfDay },
-      status: 'DONE',
+      status: 'COMPLETED',
     });
 
     res.json({ count });
   } catch (error) {
-    console.error('Error fetching done-today count:', error);
+    console.error('Error fetching completed-today count:', error);
     res.status(500).json({ count: 0 });
   }
 });
@@ -476,9 +514,9 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
       status: 'IN_PROGRESS',
     }).sort({ createdAt: 1 });
 
-    const done = await Patient.find({
+    const completed = await Patient.find({
       createdAt: { $gte: startOfDay, $lt: endOfDay },
-      status: 'DONE',
+      status: 'COMPLETED',
     }).sort({ completedAt: -1 });
 
     const onHold = await Patient.find({
@@ -496,12 +534,12 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
       counts: {
         waiting: waiting.length,
         inProgress: inProgress.length,
-        done: done.length,
+        completed: completed.length,
         onHold: onHold.length,
         skipped: skipped.length,
-        total: waiting.length + inProgress.length + done.length + onHold.length + skipped.length,
+        total: waiting.length + inProgress.length + completed.length + onHold.length + skipped.length,
       },
-      patients: { waiting, inProgress, done, onHold, skipped },
+      patients: { waiting, inProgress, completed, onHold, skipped },
     });
   } catch (error) {
     console.error('Error fetching today-all stats:', error);
@@ -574,7 +612,7 @@ app.post('/api/start-consultation', async (req: Request, res: Response) => {
     const currentPatient = await Patient.findOneAndUpdate(
       { status: 'IN_PROGRESS' },
       {
-        status: 'DONE',
+        status: 'COMPLETED',
         completedAt: new Date(),
       },
       { new: true }
@@ -621,6 +659,12 @@ app.post('/api/start-consultation', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/patients/call
+ * Emergency/quick call: completes current IN_PROGRESS and starts selected patient
+ */
+app.post('/api/patients/call', callPatient);
+
+/**
  * GET /api/patients/:id
  */
 app.get('/api/patients/:id', async (req: Request, res: Response) => {
@@ -652,7 +696,7 @@ app.put('/api/patients/:id/status', async (req: Request, res: Response) => {
     if (status === 'IN_PROGRESS') {
       updateData.startedAt = new Date();
     }
-    if (status === 'DONE') {
+    if (status === 'COMPLETED') {
       updateData.completedAt = new Date();
     }
 

@@ -7,7 +7,7 @@ export interface IPatient {
   email?: string;
   tokenNumber: number;
   type: 'BOOKED' | 'WALK_IN';
-  status: 'WAITING' | 'IN_PROGRESS' | 'DONE' | 'SKIPPED' | 'ON_HOLD';
+  status: 'WAITING' | 'IN_PROGRESS' | 'COMPLETED' | 'SKIPPED' | 'ON_HOLD';
   department?: string;
   createdAt?: Date;
   startedAt?: Date;

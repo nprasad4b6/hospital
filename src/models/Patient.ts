@@ -37,7 +37,7 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   status: {
     type: String,
-    enum: ['WAITING', 'IN_PROGRESS', 'DONE', 'SKIPPED', 'ON_HOLD'],
+    enum: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'],
     default: 'WAITING',
     required: true,
   },
