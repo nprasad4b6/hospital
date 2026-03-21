@@ -41,6 +41,16 @@ const patientSchema = new Schema<IPatientDocument>({
     default: 'WAITING',
     required: true,
   },
+  guardianName: {
+    type: String,
+  },
+  relation: {
+    type: String,
+    enum: ['Father', 'Mother', 'Guardian'],
+  },
+  address: {
+    type: String,
+  },
   department: {
     type: String,
     default: 'General',

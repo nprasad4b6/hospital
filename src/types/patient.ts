@@ -8,6 +8,9 @@ export interface IPatient {
   tokenNumber: number;
   type: 'BOOKED' | 'WALK_IN';
   status: 'WAITING' | 'IN_PROGRESS' | 'COMPLETED' | 'SKIPPED' | 'ON_HOLD';
+  guardianName?: string;
+  relation?: 'Father' | 'Mother' | 'Guardian';
+  address?: string;
   department?: string;
   createdAt?: Date;
   startedAt?: Date;

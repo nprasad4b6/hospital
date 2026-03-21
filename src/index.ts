@@ -552,7 +552,7 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
  */
 app.post('/api/patients', async (req: Request, res: Response) => {
   try {
-    const { name, phone, type, age, gender } = req.body;
+    const { name, phone, type, age, gender, guardianName, relation, address } = req.body;
 
     // Compute token number relative to the current IST calendar day so tokens start from 1 each day
     const { start: todayStart, end: todayEnd } = getIstStartEnd();
@@ -571,6 +571,9 @@ app.post('/api/patients', async (req: Request, res: Response) => {
       tokenNumber,
       type: type || 'WALK_IN',
       status: 'WAITING',
+      ...(guardianName && { guardianName }),
+      ...(relation && { relation }),
+      ...(address && { address }),
     });
 
     await patient.save();
@@ -680,6 +683,93 @@ app.get('/api/patients/:id', async (req: Request, res: Response) => {
     });
   } catch (error) {
     res.status(500).json({
+      error: error instanceof Error ? error.message : 'An error occurred',
+    });
+  }
+});
+
+/**
+ * PUT /api/patients/:id
+ * Edit registration details for a patient
+ */
+app.put('/api/patients/:id', async (req: Request, res: Response) => {
+  try {
+    const {
+      name,
+      phone,
+      age,
+      gender,
+      guardianName,
+      relation,
+      address,
+    } = req.body;
+
+    const updateData: Record<string, any> = {};
+
+    if (name !== undefined) {
+      const trimmedName = String(name).trim();
+      if (!trimmedName || trimmedName.length < 2) {
+        return res.status(400).json({ error: 'Name must be at least 2 characters' });
+      }
+      updateData.name = trimmedName;
+    }
+
+    if (phone !== undefined) {
+      const normalizedPhone = String(phone).trim();
+      if (!/^\d{10}$/.test(normalizedPhone)) {
+        return res.status(400).json({ error: 'Phone must be 10 digits' });
+      }
+      updateData.phone = normalizedPhone;
+    }
+
+    if (age !== undefined) {
+      const parsedAge = Number(age);
+      if (Number.isNaN(parsedAge) || parsedAge < 0 || parsedAge > 120) {
+        return res.status(400).json({ error: 'Age must be between 0 and 120' });
+      }
+      updateData.age = parsedAge;
+    }
+
+    if (gender !== undefined) {
+      if (!['MALE', 'FEMALE'].includes(String(gender))) {
+        return res.status(400).json({ error: 'Invalid gender value' });
+      }
+      updateData.gender = gender;
+    }
+
+    if (guardianName !== undefined) {
+      updateData.guardianName = String(guardianName).trim();
+    }
+
+    if (relation !== undefined) {
+      const normalizedRelation = String(relation).trim();
+      if (normalizedRelation && !['Father', 'Mother', 'Guardian'].includes(normalizedRelation)) {
+        return res.status(400).json({ error: 'Invalid relation value' });
+      }
+      updateData.relation = normalizedRelation;
+    }
+
+    if (address !== undefined) {
+      updateData.address = String(address).trim();
+    }
+
+    const patient = await Patient.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+
+    if (!patient) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
+
+    const queue = await getSortedQueue();
+    const queueWithWaitTimes = calculateWaitTimes(queue);
+    io.emit('QUEUE_UPDATE', queueWithWaitTimes);
+
+    res.json(patient);
+  } catch (error) {
+    res.status(400).json({
       error: error instanceof Error ? error.message : 'An error occurred',
     });
   }
