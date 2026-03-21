@@ -38,16 +38,18 @@ const patientSchema = new mongoose.Schema({
     enum: ["WAITING", "IN_PROGRESS", "DONE", "SKIPPED", "ON_HOLD"],
     default: "WAITING",
     required: true,
-  },  guardianName: {
+  },
+  guardianName: {
     type: String,
   },
   relation: {
     type: String,
-    enum: ['Father', 'Mother', 'Guardian'],
+    enum: ["Father", "Mother", "Guardian"],
   },
   address: {
     type: String,
-  },  department: {
+  },
+  department: {
     type: String,
     default: "General",
   },
