@@ -49,6 +49,10 @@ const patientSchema = new mongoose.Schema({
   address: {
     type: String,
   },
+  doctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Doctor",
+  },
   department: {
     type: String,
     default: "General",

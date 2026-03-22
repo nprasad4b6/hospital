@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import connectDB from './config/database';
 import Patient from './models/Patient';
+import Doctor from './models/Doctor';
 import { IPatient, IQueueItem } from './types/patient';
 import { callPatient } from './controllers/patientController';
 
@@ -552,7 +553,7 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
  */
 app.post('/api/patients', async (req: Request, res: Response) => {
   try {
-    const { name, phone, type, age, gender, guardianName, relation, address } = req.body;
+    const { name, phone, type, age, gender, guardianName, relation, address, doctorId } = req.body;
 
     // Compute token number relative to the current IST calendar day so tokens start from 1 each day
     const { start: todayStart, end: todayEnd } = getIstStartEnd();
@@ -574,6 +575,7 @@ app.post('/api/patients', async (req: Request, res: Response) => {
       ...(guardianName && { guardianName }),
       ...(relation && { relation }),
       ...(address && { address }),
+      ...(doctorId && { doctorId }),
     });
 
     await patient.save();
@@ -839,6 +841,54 @@ app.post('/api/reset', async (req: Request, res: Response) => {
     io.emit('QUEUE_UPDATE', []);
     res.json({ message: 'Queue reset successfully' });
   } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'An error occurred',
+    });
+  }
+});
+
+/**
+ * GET /api/doctors
+ * Returns all active doctors (isActive: true), sorted by name.
+ */
+app.get('/api/doctors', async (req: Request, res: Response) => {
+  try {
+    const doctors = await Doctor.find({ isActive: true }).sort({ name: 1 }).select('_id doctorId name specialization roomNumber');
+    res.json(doctors);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'An error occurred',
+    });
+  }
+});
+
+/**
+ * POST /api/doctors/bulk-insert
+ * Accepts an array of doctor objects and inserts them all at once.
+ * Returns a 409 on duplicate email/doctorId violations.
+ */
+app.post('/api/doctors/bulk-insert', async (req: Request, res: Response) => {
+  try {
+    const doctors = req.body;
+    if (!Array.isArray(doctors) || doctors.length === 0) {
+      res.status(400).json({ error: 'Request body must be a non-empty array of doctor objects.' });
+      return;
+    }
+    const inserted = await Doctor.insertMany(doctors, { ordered: false });
+    res.status(201).json({ message: `${inserted.length} doctor(s) inserted successfully.`, data: inserted });
+  } catch (error: any) {
+    // MongoDB duplicate key error code
+    if (error.code === 11000 || (error.writeErrors && error.writeErrors.some((e: any) => e.code === 11000))) {
+      const duplicates = error.writeErrors
+        ? error.writeErrors.filter((e: any) => e.code === 11000).map((e: any) => e.err?.op?.email || e.err?.op?.doctorId)
+        : [error.keyValue];
+      res.status(409).json({
+        error: 'Duplicate email or doctorId detected.',
+        duplicates,
+        inserted: error.result?.nInserted ?? 0,
+      });
+      return;
+    }
     res.status(500).json({
       error: error instanceof Error ? error.message : 'An error occurred',
     });

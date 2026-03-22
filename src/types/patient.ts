@@ -11,6 +11,7 @@ export interface IPatient {
   guardianName?: string;
   relation?: 'Father' | 'Mother' | 'Guardian';
   address?: string;
+  doctorId?: string;
   department?: string;
   createdAt?: Date;
   startedAt?: Date;
