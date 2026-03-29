@@ -19,7 +19,7 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   gender: {
     type: String,
-    enum: ['MALE', 'FEMALE'],
+    enum: ['MALE', 'FEMALE', 'OTHER'],
     default: 'FEMALE',
   },
   email: {
@@ -37,7 +37,7 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   status: {
     type: String,
-    enum: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'],
+    enum: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'],
     default: 'WAITING',
     required: true,
   },
@@ -46,7 +46,7 @@ const patientSchema = new Schema<IPatientDocument>({
   },
   relation: {
     type: String,
-    enum: ['Father', 'Mother', 'Guardian'],
+    enum: ['Father', 'Mother', 'Guardian', 'Spouse'],
   },
   address: {
     type: String,

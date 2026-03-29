@@ -126,7 +126,7 @@ async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
 
     const patients = await Patient.find({
       createdAt: { $gte: start, $lt: end },
-      status: { $in: ['WAITING', 'IN_PROGRESS', 'SKIPPED', 'ON_HOLD'] },
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'] },
     }).sort({ createdAt: 1 });
 
     // Active patients participate in queue ordering; skipped/on-hold are appended.
@@ -134,7 +134,7 @@ async function getSortedQueue(dateString?: string): Promise<IPatient[]> {
       (p) => p.status === 'WAITING' || p.status === 'IN_PROGRESS'
     );
     const awayPatients = patients
-      .filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD')
+      .filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD' || p.status === 'SENT_FOR_TEST')
       .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
 
     const sortedQueue = activePatients
@@ -167,7 +167,7 @@ function calculateWaitTimes(queue: IPatient[]): IQueueItem[] {
     .slice()
     .sort((a, b) => (a.tokenNumber || 0) - (b.tokenNumber || 0));
   const completed = queue.filter((p) => p.status === 'COMPLETED');
-  const skipped = queue.filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD');
+  const skipped = queue.filter((p) => p.status === 'SKIPPED' || p.status === 'ON_HOLD' || p.status === 'SENT_FOR_TEST');
 
   const ordered: IPatient[] = [];
   if (inProgress) ordered.push(inProgress);
@@ -230,7 +230,7 @@ io.on('connection', (socket) => {
       // Fetch patients created on this date (IST range -> UTC timestamps)
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'] },
       }).sort({ createdAt: 1 });
 
       // Strict FIFO by arrival time.
@@ -346,7 +346,7 @@ io.on('connection', (socket) => {
 
       const patients = await Patient.find({
         createdAt: { $gte: startOfDay, $lt: endOfDay },
-        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
+        status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'] },
       }).sort({ createdAt: 1 });
 
       const sortedQueue = patients
@@ -391,7 +391,7 @@ app.get('/api/queue', async (req: Request, res: Response) => {
 /**
  * GET /api/queue-by-date?date=YYYY-MM-DD
  * Returns complete queue records for selected IST date across all statuses
- * (WAITING, IN_PROGRESS, COMPLETED, SKIPPED, ON_HOLD) with position + ETA fields.
+ * (WAITING, IN_PROGRESS, COMPLETED, SKIPPED, ON_HOLD, SENT_FOR_TEST) with position + ETA fields.
  */
 app.get('/api/queue-by-date', async (req: Request, res: Response) => {
   try {
@@ -400,7 +400,7 @@ app.get('/api/queue-by-date', async (req: Request, res: Response) => {
 
     const patients = await Patient.find({
       createdAt: { $gte: startOfDay, $lt: endOfDay },
-      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD'] },
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'] },
     }).sort({ createdAt: 1 });
 
     const sortedQueue = patients
@@ -435,7 +435,7 @@ app.get('/api/patients/history', async (req: Request, res: Response) => {
     const filter: any = {
       createdAt: { $gte: start, $lte: end },
       // Include legacy DONE records so historical searches remain complete.
-      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'DONE', 'SKIPPED', 'ON_HOLD'] },
+      status: { $in: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'DONE', 'SKIPPED', 'ON_HOLD', 'SENT_FOR_TEST'] },
     };
 
     if (search) {
@@ -522,7 +522,7 @@ app.get('/api/stats/today-all', async (req: Request, res: Response) => {
 
     const onHold = await Patient.find({
       createdAt: { $gte: startOfDay, $lt: endOfDay },
-      status: 'ON_HOLD',
+      status: { $in: ['ON_HOLD', 'SENT_FOR_TEST'] },
     }).sort({ createdAt: 1 });
 
     const skipped = await Patient.find({
@@ -790,6 +790,9 @@ app.put('/api/patients/:id/status', async (req: Request, res: Response) => {
     }
     if (status === 'COMPLETED') {
       updateData.completedAt = new Date();
+    }
+    if (status === 'SENT_FOR_TEST') {
+      updateData.completedAt = null;
     }
 
     const patient = await Patient.findByIdAndUpdate(

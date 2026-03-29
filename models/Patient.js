@@ -16,7 +16,7 @@ const patientSchema = new mongoose.Schema({
   },
   gender: {
     type: String,
-    enum: ["MALE", "FEMALE"],
+    enum: ["MALE", "FEMALE", "OTHER"],
     default: "FEMALE",
   },
   email: {
@@ -35,7 +35,14 @@ const patientSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ["WAITING", "IN_PROGRESS", "DONE", "SKIPPED", "ON_HOLD"],
+    enum: [
+      "WAITING",
+      "IN_PROGRESS",
+      "DONE",
+      "SKIPPED",
+      "ON_HOLD",
+      "SENT_FOR_TEST",
+    ],
     default: "WAITING",
     required: true,
   },
@@ -44,7 +51,7 @@ const patientSchema = new mongoose.Schema({
   },
   relation: {
     type: String,
-    enum: ["Father", "Mother", "Guardian"],
+    enum: ["Father", "Mother", "Guardian", "Spouse"],
   },
   address: {
     type: String,
@@ -62,7 +69,17 @@ const patientSchema = new mongoose.Schema({
     default: Date.now,
   },
   startedAt: Date,
-  completedAt: Date,
+  completedAt: {
+    type: Date,
+    default: null,
+  },
+});
+
+patientSchema.pre("validate", function (next) {
+  if (this.status === "SENT_FOR_TEST" && !this.completedAt) {
+    this.completedAt = null;
+  }
+  next();
 });
 
 module.exports = mongoose.model("Patient", patientSchema);
